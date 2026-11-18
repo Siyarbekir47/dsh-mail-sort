@@ -26,5 +26,13 @@
     "index.js",
     "cordis.patch.yml",
     "README.md"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Siyarbekir47/dsh-mail-sort.git"
+  },
+  "homepage": "https://github.com/Siyarbekir47/dsh-mail-sort#readme",
+  "bugs": {
+    "url": "https://github.com/Siyarbekir47/dsh-mail-sort/issues"
+  }
 }

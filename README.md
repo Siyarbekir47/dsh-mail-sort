@@ -13,7 +13,7 @@ New mail arrives → one agent run sorts the whole current INBOX of your account
 ## Install
 
 ```sh
-dsh plugin --profile web add github:<owner>/dsh-mail-sort
+dsh plugin --profile web add github:Siyarbekir47/dsh-mail-sort
 # or, once published:
 dsh plugin --profile web add dsh-mail-sort
 ```
