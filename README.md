@@ -77,6 +77,8 @@ Restart DSH (or toggle the bundle) after config changes.
 - First consumer scan only establishes a baseline; mails already in INBOX at startup do not fire (the INBOX sweep covers them on the next trigger).
 - `output.render` is called as `render(args, value)` — rendering the first parameter echoes the call arguments back to the model and hides the real result (e.g. Telegram ok/error). Always render the second parameter.
 - Code edits under `node_modules` do not reach a running host: CJS plugins stay in Node's require cache across bundle toggles. Reinstall the package (or restart DSH) to load changed code.
+- Telegram HTML parse_mode rejects `<br>`, `<p>`, `<div>` and bare `&`/`<`. Since 0.2.2 the plugin sanitizes host-side (whitelist tags, `<br>`→newline, escapes bare `&`/`<`), falls back to plain text on parse errors, and retries transient failures once. A formatting mistake can no longer silently swallow the notification.
+- The consumer's first scan after (re)start only sets a baseline; mails arriving during downtime never fire an event. Since 0.2.2 the plugin runs one startup sweep (~45 s after activation) that processes any leftover INBOX mail; it exits silently when everything is already sorted.
 
 ## License
 

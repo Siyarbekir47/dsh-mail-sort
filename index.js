@@ -15,6 +15,38 @@ const path = require('node:path')
 exports.name = 'dsh-mail-sort'
 exports.inject = ['emailTasks', 'timer', 'agents', 'tools']
 
+// Telegram HTML parse_mode only accepts a small tag whitelist. The sorting agent
+// sometimes emits <br>/<p>/<div> or unescaped & < >, which makes the Bot API
+// reject the whole message ("can't parse entities"). Sanitize host-side so a
+// formatting mistake can never silently swallow the notification again.
+const TG_ALLOWED_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'code', 'pre', 'a', 'blockquote', 'tg-spoiler', 'span'])
+function sanitizeTelegramHtml(input) {
+  let text = String(input || '')
+  // Escape bare & (keep existing entities like &amp; / &#123; intact).
+  text = text.replace(/&(?![a-zA-Z][a-zA-Z0-9]*;|#\d+;|#x[0-9a-fA-F]+;)/g, '&amp;')
+  // Escape a bare < that does not start a tag. Bare > is accepted by Telegram.
+  text = text.replace(/<(?![a-zA-Z/!])/g, '&lt;')
+  // Walk tags: keep whitelisted ones (a keeps href only), convert block/line
+  // breaks to real newlines, escape everything else so it shows as text.
+  text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^<>]*?)?)\s*\/?>/g, (whole, name, attrs) => {
+    const tag = name.toLowerCase()
+    const closing = whole.startsWith('</')
+    if (tag === 'br') return '\n'
+    if (tag === 'p' || tag === 'div') return closing ? '\n' : ''
+    if (!TG_ALLOWED_TAGS.has(tag)) return whole.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    if (tag === 'a' && !closing) {
+      const href = /href\s*=\s*("([^"]*)"|'([^']*)')/i.exec(attrs || '')
+      const url = href ? (href[2] ?? href[3] ?? '') : ''
+      return url ? `<a href="${url.replace(/"/g, '&quot;')}">` : '<a>'
+    }
+    if (tag === 'span' && !closing) {
+      return /class\s*=\s*["']tg-spoiler["']/i.test(attrs || '') ? '<span class="tg-spoiler">' : ''
+    }
+    return closing ? `</${tag}>` : `<${tag}>`
+  })
+  return text
+}
+
 const CATEGORIES = `
 ## Kategorie-Zuordnung
 | Ordner | E-Mail-Inhalt |
@@ -47,7 +79,8 @@ const RULES = `
 const TG_FORMAT = `
 ## Telegram-Kurzmeldung (genau ein Aufruf, nur wenn etwas verschoben wurde oder manuelle Prüfung nötig ist)
 Rufe das Tool \`mail_sort_report\` mit dem vollständigen HTML-Text auf (Parameter text). Das Plugin sendet host-seitig an die konfigurierte Gruppe; du brauchst kein bash/curl.
-Format je bearbeiteter E-Mail (HTML <b>…</b>, escape & < > im Fließtext):
+Erlaubte Tags: <b>, <i>, <a href="…">. KEIN <br>, <p>, <div> – Zeilenumbrüche als echte Newlines schreiben. & < > im Fließtext escapen (&amp; &lt; &gt;). Das Plugin bereinigt ungültige Tags zusätzlich automatisch.
+Format je bearbeiteter E-Mail:
 📬 <b>Neue E-Mail</b>
 <b>Postfach:</b> …  <b>Von:</b> …  <b>Betreff:</b> …
 <b>Zusammenfassung:</b> 1–2 Sätze
@@ -58,7 +91,9 @@ Nur ok:true im Tool-Ergebnis gilt als zugestellt; bei unklarem Status nicht blin
 `
 
 function buildPrompt(events, cfg) {
-  const list = events.map(e => `- Konto: ${e.account} | UID: ${e.uid} | Von: ${e.sender} | Betreff: ${e.subject || '(ohne)'} | Datum: ${e.date || '?'}`).join('\n')
+  const list = events.length
+    ? events.map(e => `- Konto: ${e.account} | UID: ${e.uid} | Von: ${e.sender} | Betreff: ${e.subject || '(ohne)'} | Datum: ${e.date || '?'}`).join('\n')
+    : '(Startup-Sweep: keine konkreten Trigger-Events; prüfe den gesamten INBOX auf liegengebliebene Mails)'
   const accounts = (cfg.accounts || []).join(', ') || 'die konfigurierten Konten'
   return `# Automatische E-Mail-Verwaltung (event-getriggert durch dsh-mail-sort)
 
@@ -97,10 +132,12 @@ exports.apply = (ctx, config) => {
   let lastRun = null
   let tasksRef = null
   let retry = null
+  let sweepTimer = null
+  let sweptThisFiber = false
 
-  async function flush() {
+  async function flush(forceSweep = false) {
     timer = null
-    if (!pending.length) return
+    if (!pending.length && !forceSweep) return
     if (running) { schedule(); return }
     const batch = pending
     pending = []
@@ -179,16 +216,26 @@ exports.apply = (ctx, config) => {
     tasksRef = tasks
     const offs = cfg.consumerIds.map(id => tasks.subscribe(id, onArrival))
     retry = typeof ctx.interval === 'function' ? ctx.interval(tickFn, 5000) : setInterval(tickFn, 5000)
+    // Startup sweep: the consumer's first scan only sets a baseline, so mails
+    // that arrived while DSH was down (or during a bundle toggle) never fire an
+    // event. One delayed sweep run per fiber activation catches them; the agent
+    // exits silently when all INBOXes are already sorted.
+    if (cfg.enabled && cfg.consumerIds.length && !sweptThisFiber) {
+      sweptThisFiber = true
+      sweepTimer = setTimeout(() => { sweepTimer = null; if (!running && !pending.length) flush(true) }, 45000)
+    }
     return () => {
       tasksRef = null
       if (typeof retry === 'function') retry(); else clearInterval(retry)
       retry = null
+      if (sweepTimer) { clearTimeout(sweepTimer); sweepTimer = null }
       offs.forEach(off => off())
     }
   })
 
   ctx.effect(() => {
     if (timer) clearTimeout(timer)
+    if (sweepTimer) clearTimeout(sweepTimer)
   })
 
   ctx.tools.register({
@@ -210,18 +257,40 @@ exports.apply = (ctx, config) => {
     },
     execute: async args => {
       const fs = require('node:fs')
-      if (!cfg.telegramTokenRef) return { ok: false, error: 'config.telegramTokenRef is required' }
-      const raw = fs.readFileSync(cfg.credentialsPath, 'utf8')
+      if (!cfg.telegramTokenRef) return { ok: false, message_id: 0, error: 'config.telegramTokenRef is required' }
+      let raw
+      try { raw = fs.readFileSync(cfg.credentialsPath, 'utf8') } catch (err) { return { ok: false, message_id: 0, error: 'credentials file unreadable: ' + (err?.message ?? err) } }
       const m = raw.match(new RegExp(cfg.telegramTokenRef.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':\\s*(\\S+)'))
-      if (!m) return { ok: false, error: 'telegram token ref not found in credentials file' }
-      const text = String(args.text || '').slice(0, 4096)
-      const res = await fetch('https://api.telegram.org/bot' + m[1] + '/sendMessage', {
+      if (!m) return { ok: false, message_id: 0, error: 'telegram token ref not found in credentials file' }
+      const text = sanitizeTelegramHtml(String(args.text || '')).slice(0, 4096)
+      const send = body => fetch('https://api.telegram.org/bot' + m[1] + '/sendMessage', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chat_id: cfg.chatId, parse_mode: 'HTML', text }),
-      })
-      const j = await res.json().catch(() => ({}))
-      return { ok: j.ok === true, message_id: j.result?.message_id ?? 0, error: j.description ?? '' }
+        body: JSON.stringify(body),
+      }).then(async res => ({ status: res.status, j: await res.json().catch(() => ({})) }))
+      // Attempt 1: sanitized HTML. Attempt 2 (parse errors only): plain text,
+      // stripped of all tags — a readable notification beats a lost one.
+      // Transient network/5xx failures get one retry after 2 s.
+      let lastErr = ''
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const usePlain = attempt === 2
+          const body = usePlain
+            ? { chat_id: cfg.chatId, text: text.replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"') }
+            : { chat_id: cfg.chatId, parse_mode: 'HTML', text }
+          const { status, j } = await send(body)
+          if (j.ok === true) return { ok: true, message_id: j.result?.message_id ?? 0, error: '' }
+          lastErr = j.description || ('HTTP ' + status)
+          const parseError = /can't parse entities|unsupported start tag|can't find end of the entity/i.test(lastErr)
+          if (parseError && attempt < 2) continue // retry immediately as plain text on next loop
+          if (status >= 500 && attempt < 2) { await new Promise(r => setTimeout(r, 2000)); continue }
+          return { ok: false, message_id: 0, error: lastErr }
+        } catch (err) {
+          lastErr = String(err?.message ?? err)
+          if (attempt < 2) { await new Promise(r => setTimeout(r, 2000)); continue }
+        }
+      }
+      return { ok: false, message_id: 0, error: lastErr }
     },
   })
 
