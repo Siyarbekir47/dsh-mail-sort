@@ -75,6 +75,8 @@ Restart DSH (or toggle the bundle) after config changes.
 - Create timers inside the inject callback, not synchronously in `apply` (apply-time timers are dropped on inject-resolution restart).
 - `ctx.agents.create()` returns `{agent, dispose}`; prompt via `handle.agent.followup()`. Spawned runs need `meta.agentPreset` **and** `agentOptions.provider/model`, else "no provider/model".
 - First consumer scan only establishes a baseline; mails already in INBOX at startup do not fire (the INBOX sweep covers them on the next trigger).
+- `output.render` is called as `render(args, value)` — rendering the first parameter echoes the call arguments back to the model and hides the real result (e.g. Telegram ok/error). Always render the second parameter.
+- Code edits under `node_modules` do not reach a running host: CJS plugins stay in Node's require cache across bundle toggles. Reinstall the package (or restart DSH) to load changed code.
 
 ## License
 

@@ -206,7 +206,7 @@ exports.apply = (ctx, config) => {
         properties: { ok: { type: 'boolean' }, message_id: { type: 'integer' }, error: { type: 'string' } },
         additionalProperties: false,
       },
-      render: v => [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v) }],
+      render: (args, v) => [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v) }],
     },
     execute: async args => {
       const fs = require('node:fs')
@@ -238,7 +238,7 @@ exports.apply = (ctx, config) => {
         },
         additionalProperties: false,
       },
-      render: v => [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }],
+      render: (args, v) => [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }],
     },
     execute: async () => ({
       enabled: cfg.enabled,
