@@ -1,6 +1,6 @@
 {
   "name": "dsh-mail-sort",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Event-driven IMAP inbox sorting + Telegram summary for DeepSeek Harness, via the dsh-email emailTasks arrival hook. Metadata-only triggers, one agent run per batch, host-side Telegram delivery.",
   "main": "index.js",
   "license": "MIT",
@@ -21,6 +21,9 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
   },
   "files": [
     "index.js",

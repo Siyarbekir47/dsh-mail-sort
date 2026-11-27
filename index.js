@@ -15,6 +15,25 @@ const path = require('node:path')
 exports.name = 'dsh-mail-sort'
 exports.inject = ['emailTasks', 'timer', 'agents', 'tools']
 
+// Config schema so the plugin's provider/model fields render in DSH's plugin
+// settings form (provider = LLM route, model = model id). Use schemastery;
+// the installed profile has @deepseek-ai/schemastery available.
+const z = require('@deepseek-ai/schemastery')
+exports.Config = z.object({
+  enabled: z.boolean().default(true).description('Plugin aktiv'),
+  consumerIds: z.array(z.string()).default([]).description('dsh-email consumer ids (one per account/folder)'),
+  accounts: z.array(z.string()).default([]).description('Account addresses used in the sorting prompt'),
+  cwd: z.string().default(process.cwd()).description('Working directory for spawned sorting runs'),
+  preset: z.string().default('standard').description('Agent preset for spawned runs'),
+  provider: z.string().required().description('LLM provider route (z.B. deepseek, offical, qwen-token-plan)'),
+  model: z.string().required().description('Model id (z.B. DeepSeek V4.1 Flash, qwen3.8-flash)'),
+  flushDelayMs: z.number().default(4000).description('Debounce before spawning a run (ms)'),
+  maxWaitMs: z.number().default(20000).description('Max wait before forced flush (ms)'),
+  chatId: z.string().required().description('Telegram group chat id'),
+  credentialsPath: z.string().default(path.join(os.homedir(), '.dsh', '.credentials.yaml')).description('Credentials file path'),
+  telegramTokenRef: z.string().required().description('Credentials ref holding the Telegram bot token'),
+})
+
 // Telegram HTML parse_mode only accepts a small tag whitelist. The sorting agent
 // sometimes emits <br>/<p>/<div> or unescaped & < >, which makes the Bot API
 // reject the whole message ("can't parse entities"). Sanitize host-side so a
@@ -168,6 +187,8 @@ exports.apply = (ctx, config) => {
       })
       guard = setTimeout(() => { log.warn?.('run timeout, disposing'); finish() }, 30 * 60 * 1000)
       handle.agent.followup({
+        id: crypto.randomUUID(),
+        role: 'user',
         content: [{ type: 'text', text: buildPrompt(batch, cfg) }],
         source: { kind: 'user', rpcId: 'mail-sort-' + sessionId },
       })
